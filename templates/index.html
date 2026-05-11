@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>영상 다운로더</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      background: #0f0f0f;
+      color: #f0f0f0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 48px 16px;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+    .subtitle { color: #888; font-size: 0.9rem; margin-bottom: 36px; }
+
+    /* ── 입력 영역 ── */
+    .input-row {
+      display: flex;
+      gap: 10px;
+      width: 100%;
+      max-width: 640px;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 14px 16px;
+      border-radius: 12px;
+      border: 1.5px solid #333;
+      background: #1a1a1a;
+      color: #f0f0f0;
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color .2s;
+    }
+    input[type="text"]:focus { border-color: #7c6af7; }
+    input[type="text"]::placeholder { color: #555; }
+
+    button.primary {
+      padding: 14px 22px;
+      border-radius: 12px;
+      border: none;
+      background: #7c6af7;
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background .2s, opacity .2s;
+    }
+    button.primary:hover:not(:disabled) { background: #6a59e0; }
+    button.primary:disabled { opacity: .5; cursor: default; }
+
+    /* ── 상태 메시지 ── */
+    #status {
+      margin-top: 20px;
+      font-size: 0.88rem;
+      color: #888;
+      min-height: 20px;
+    }
+    #status.error { color: #f87171; }
+
+    /* ── 결과 카드 ── */
+    #result {
+      display: none;
+      width: 100%;
+      max-width: 640px;
+      margin-top: 28px;
+      background: #1a1a1a;
+      border: 1.5px solid #2a2a2a;
+      border-radius: 16px;
+      overflow: hidden;
+    }
+
+    .card-thumb {
+      width: 100%;
+      aspect-ratio: 16/9;
+      object-fit: cover;
+      background: #111;
+      display: block;
+    }
+    .card-body { padding: 20px; }
+
+    .card-title {
+      font-size: 1rem;
+      font-weight: 600;
+      line-height: 1.4;
+      margin-bottom: 6px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+    .card-meta {
+      font-size: 0.8rem;
+      color: #666;
+      margin-bottom: 20px;
+    }
+
+    /* ── 다운로드 버튼 그룹 ── */
+    .dl-group { display: flex; flex-direction: column; gap: 10px; }
+    .dl-group label {
+      font-size: 0.78rem;
+      color: #666;
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      margin-bottom: 2px;
+      display: block;
+    }
+
+    a.dl-btn {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 13px 16px;
+      border-radius: 10px;
+      background: #252525;
+      border: 1.5px solid #333;
+      color: #f0f0f0;
+      text-decoration: none;
+      font-size: 0.9rem;
+      font-weight: 500;
+      transition: background .15s, border-color .15s;
+    }
+    a.dl-btn:hover { background: #2e2e2e; border-color: #7c6af7; }
+    a.dl-btn .icon { font-size: 1.1rem; flex-shrink: 0; }
+    a.dl-btn .label { flex: 1; }
+    a.dl-btn .badge {
+      font-size: 0.72rem;
+      color: #888;
+      background: #333;
+      padding: 2px 7px;
+      border-radius: 20px;
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px solid #2a2a2a;
+      margin: 18px 0;
+    }
+
+    /* 반응형 */
+    @media (max-width: 480px) {
+      .input-row { flex-direction: column; }
+      button.primary { width: 100%; }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>영상 다운로더</h1>
+  <p class="subtitle">Instagram · YouTube · TikTok 등 지원</p>
+
+  <div class="input-row">
+    <input type="text" id="urlInput" placeholder="영상 URL을 붙여넣으세요" />
+    <button class="primary" id="fetchBtn" onclick="fetchInfo()">가져오기</button>
+  </div>
+
+  <div id="status"></div>
+
+  <div id="result">
+    <img id="thumb" class="card-thumb" alt="썸네일" />
+    <div class="card-body">
+      <div class="card-title" id="title"></div>
+      <div class="card-meta" id="meta"></div>
+
+      <div class="dl-group">
+        <label>영상</label>
+        <a id="videoBtn" class="dl-btn" href="#" onclick="event.preventDefault(); downloadVideo();">
+          <span class="icon">🎬</span>
+          <span class="label">영상 다운로드</span>
+          <span class="badge" id="qualityBadge"></span>
+        </a>
+      </div>
+
+      <div id="audioSection" style="display:none;">
+        <hr class="divider" />
+        <div class="dl-group">
+          <label>오디오</label>
+          <a id="audioBtn" class="dl-btn" href="#" onclick="event.preventDefault(); downloadAudio();">
+            <span class="icon">🎵</span>
+            <span class="label">오디오 다운로드</span>
+            <span class="badge" id="audioBadge"></span>
+          </a>
+        </div>
+      </div>
+
+      <div id="subsSection" style="display:none;">
+        <hr class="divider" />
+        <div class="dl-group">
+          <label>자막 / 스크립트</label>
+          <div id="subsList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const LANG_NAMES = {
+      ko: "한국어", en: "영어", "en-US": "영어(미국)", "en-GB": "영어(영국)",
+      ja: "일본어", zh: "중국어", "zh-Hans": "중국어(간체)", "zh-Hant": "중국어(번체)",
+      es: "스페인어", fr: "프랑스어", de: "독일어", pt: "포르투갈어",
+    };
+
+    function langLabel(code) {
+      return LANG_NAMES[code] || code;
+    }
+
+    function fmtDuration(sec) {
+      if (!sec) return "";
+      const m = Math.floor(sec / 60), s = sec % 60;
+      return `${m}:${String(s).padStart(2, "0")}`;
+    }
+
+    function setStatus(msg, isError = false) {
+      const el = document.getElementById("status");
+      el.textContent = msg;
+      el.className = isError ? "error" : "";
+    }
+
+    // 현재 영상 원본 URL / 제목 저장 (오디오 서버 다운로드에 사용)
+    let currentSourceUrl = "";
+    let currentTitle = "";
+
+    async function serverDownload(endpoint, btnId, labelDefault, filename) {
+      const btn = document.getElementById(btnId);
+      const label = btn.querySelector(".label");
+      btn.style.pointerEvents = "none";
+      btn.style.opacity = "0.6";
+      label.textContent = "다운로드 중...";
+
+      try {
+        const res = await fetch(endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: currentSourceUrl, title: currentTitle }),
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert(err.error || "다운로드에 실패했습니다.");
+          return;
+        }
+        const blob = await res.blob();
+        const a = document.createElement("a");
+        a.href = URL.createObjectURL(blob);
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(a.href);
+      } catch (e) {
+        alert("서버와 통신할 수 없습니다.");
+      } finally {
+        btn.style.pointerEvents = "";
+        btn.style.opacity = "";
+        label.textContent = labelDefault;
+      }
+    }
+
+    const downloadVideo = () =>
+      serverDownload("/download/video", "videoBtn", "영상 다운로드", `${currentTitle || "video"}.mp4`);
+
+    const downloadAudio = () =>
+      serverDownload("/download/audio", "audioBtn", "오디오 다운로드", `${currentTitle || "audio"}.m4a`);
+
+    async function fetchInfo() {
+      const url = document.getElementById("urlInput").value.trim();
+      if (!url) { setStatus("URL을 입력해 주세요.", true); return; }
+
+      const btn = document.getElementById("fetchBtn");
+      btn.disabled = true;
+      document.getElementById("result").style.display = "none";
+      setStatus("영상 정보를 가져오는 중...");
+
+      try {
+        const res = await fetch("/extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url }),
+        });
+        const data = await res.json();
+
+        if (!res.ok) {
+          setStatus(data.error || "오류가 발생했습니다.", true);
+          return;
+        }
+
+        currentSourceUrl = url;
+        currentTitle = data.title || "audio";
+        renderResult(data);
+        setStatus("");
+      } catch (e) {
+        setStatus("서버와 통신할 수 없습니다.", true);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function renderResult(data) {
+      // 썸네일
+      const thumb = document.getElementById("thumb");
+      if (data.thumbnail) {
+        thumb.src = data.thumbnail;
+        thumb.style.display = "block";
+      } else {
+        thumb.style.display = "none";
+      }
+
+      // 제목 / 메타
+      document.getElementById("title").textContent = data.title || "영상";
+      const metaParts = [];
+      if (data.uploader) metaParts.push(data.uploader);
+      if (data.duration)  metaParts.push(fmtDuration(data.duration));
+      document.getElementById("meta").textContent = metaParts.join("  ·  ");
+
+      // 영상 다운로드 버튼 (서버 경유)
+      document.getElementById("qualityBadge").textContent = data.quality || "best";
+
+      // 오디오 다운로드 버튼 (서버 경유)
+      const audioSection = document.getElementById("audioSection");
+      audioSection.style.display = data.has_audio ? "block" : "none";
+      if (data.has_audio) {
+        document.getElementById("audioBadge").textContent = "m4a";
+      }
+
+      // 자막
+      const subsSection = document.getElementById("subsSection");
+      const subsList = document.getElementById("subsList");
+      subsList.innerHTML = "";
+
+      if (data.subtitles && Object.keys(data.subtitles).length > 0) {
+        subsSection.style.display = "block";
+        for (const [lang, info] of Object.entries(data.subtitles)) {
+          const a = document.createElement("a");
+          a.className = "dl-btn";
+          a.href = info.url;
+          a.setAttribute("download", `${data.title || "subtitle"}_${lang}.${info.ext}`);
+          a.innerHTML = `
+            <span class="icon">📄</span>
+            <span class="label">${langLabel(lang)}</span>
+            <span class="badge">.${info.ext}</span>
+          `;
+          subsList.appendChild(a);
+        }
+      } else {
+        subsSection.style.display = "none";
+      }
+
+      document.getElementById("result").style.display = "block";
+    }
+
+    // Enter 키 지원
+    document.getElementById("urlInput")
+      .addEventListener("keydown", e => { if (e.key === "Enter") fetchInfo(); });
+  </script>
+</body>
+</html>
