@@ -3,9 +3,10 @@ import json
 import shutil
 import subprocess
 import tempfile
+import requests as http_requests
 from pathlib import Path
 from functools import wraps
-from flask import Flask, request, jsonify, render_template, send_file, after_this_request, session, redirect, url_for
+from flask import Flask, request, jsonify, render_template, send_file, after_this_request, session, redirect, url_for, Response
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "changeme-random-key-xk29zp")
@@ -15,6 +16,52 @@ YTDLP_CMD = os.environ.get("YTDLP_CMD", "yt-dlp")
 REQUEST_TIMEOUT = 30   # yt-dlp 실행 최대 대기 시간(초)
 PASSWORD = os.environ.get("APP_PASSWORD", "6658")
 COOKIES_FILE = Path(__file__).parent / "cookies.txt"
+COBALT_API  = "https://api.cobalt.tools/api/json"
+
+
+# ── YouTube 판별 ──────────────────────────────────────
+def is_youtube(url: str) -> bool:
+    return "youtube.com" in url or "youtu.be" in url
+
+
+# ── Cobalt API 호출 ───────────────────────────────────
+def cobalt_get_url(url: str, audio_only: bool = False) -> str | None:
+    try:
+        resp = http_requests.post(
+            COBALT_API,
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            json={
+                "url": url,
+                "isAudioOnly": audio_only,
+                "aFormat": "m4a" if audio_only else "mp4",
+                "vQuality": "max",
+            },
+            timeout=20,
+        )
+        data = resp.json()
+        if data.get("status") in ("redirect", "stream", "tunnel"):
+            return data.get("url")
+    except Exception:
+        pass
+    return None
+
+
+# ── YouTube 메타데이터 (oEmbed) ───────────────────────
+def youtube_oembed(url: str) -> dict:
+    try:
+        resp = http_requests.get(
+            "https://www.youtube.com/oembed",
+            params={"url": url, "format": "json"},
+            timeout=10,
+        )
+        data = resp.json()
+        return {
+            "title":     data.get("title", "YouTube 영상"),
+            "uploader":  data.get("author_name"),
+            "thumbnail": data.get("thumbnail_url"),
+        }
+    except Exception:
+        return {"title": "YouTube 영상", "uploader": None, "thumbnail": None}
 
 
 # ── 인증 데코레이터 ───────────────────────────────────
@@ -142,11 +189,25 @@ def extract():
     if not url:
         return jsonify({"error": "URL을 입력해 주세요."}), 400
 
+    # ── YouTube: oEmbed로 메타데이터만 가져오기 ──────────
+    if is_youtube(url):
+        meta = youtube_oembed(url)
+        return jsonify({
+            "title":      meta["title"],
+            "thumbnail":  meta["thumbnail"],
+            "duration":   None,
+            "uploader":   meta["uploader"],
+            "has_video":  True,
+            "has_audio":  True,
+            "quality":    "최고화질",
+            "subtitles":  {},
+            "is_youtube": True,
+        })
+
+    # ── 그 외: yt-dlp ────────────────────────────────────
     try:
         proc = subprocess.run(
-            [YTDLP_CMD, "--dump-json", "--no-playlist",
-             "--extractor-args", "youtube:player_client=web",
-             "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"]
+            [YTDLP_CMD, "--dump-json", "--no-playlist"]
             + (["--cookies", str(COOKIES_FILE)] if COOKIES_FILE.exists() else [])
             + [url],
             capture_output=True,
@@ -167,18 +228,13 @@ def extract():
     except json.JSONDecodeError:
         return jsonify({"error": "영상 정보를 파싱할 수 없습니다."}), 500
 
-    # 최고 해상도 파악 (표시용)
     formats = info.get("formats") or []
     all_heights = [f.get("height") for f in formats if f.get("height")]
     best_height = max(all_heights) if all_heights else None
-
-    # 오디오 지원 여부 (오디오 전용 스트림 존재 확인)
     has_audio = any(
         f.get("acodec", "none") != "none" and f.get("vcodec", "none") == "none"
         for f in formats
     )
-
-    # 자막 선택
     subtitles = pick_subtitles(info)
 
     return jsonify({
@@ -190,6 +246,7 @@ def extract():
         "quality":    f"{best_height}p" if best_height else "best",
         "has_audio":  has_audio,
         "subtitles":  subtitles,
+        "is_youtube": False,
     })
 
 
@@ -205,6 +262,19 @@ def download_video():
 
     if not url:
         return jsonify({"error": "URL이 필요합니다."}), 400
+
+    # ── YouTube: Cobalt API 경유 ──────────────────────
+    if is_youtube(url):
+        cobalt_url = cobalt_get_url(url, audio_only=False)
+        if cobalt_url:
+            safe_title = "".join(c for c in title if c not in r'\/:*?"<>|').strip() or "video"
+            cobalt_resp = http_requests.get(cobalt_url, stream=True, timeout=120)
+            return Response(
+                cobalt_resp.iter_content(chunk_size=65536),
+                mimetype="video/mp4",
+                headers={"Content-Disposition": f'attachment; filename="{safe_title}.mp4"'},
+            )
+        return jsonify({"error": "Cobalt API 오류. 잠시 후 다시 시도해 주세요."}), 502
 
     tmpdir = tempfile.mkdtemp()
     try:
@@ -268,6 +338,19 @@ def download_audio():
 
     if not url:
         return jsonify({"error": "URL이 필요합니다."}), 400
+
+    # ── YouTube: Cobalt API 경유 ──────────────────────
+    if is_youtube(url):
+        cobalt_url = cobalt_get_url(url, audio_only=True)
+        if cobalt_url:
+            safe_title = "".join(c for c in title if c not in r'\/:*?"<>|').strip() or "audio"
+            cobalt_resp = http_requests.get(cobalt_url, stream=True, timeout=120)
+            return Response(
+                cobalt_resp.iter_content(chunk_size=65536),
+                mimetype="audio/mp4",
+                headers={"Content-Disposition": f'attachment; filename="{safe_title}.m4a"'},
+            )
+        return jsonify({"error": "Cobalt API 오류. 잠시 후 다시 시도해 주세요."}), 502
 
     tmpdir = tempfile.mkdtemp()
     try:
